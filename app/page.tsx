@@ -1,44 +1,28 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import './calendar.css'
+
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import {
   Activity, Award, Camera, Check, ChevronLeft, ChevronRight, Crosshair,
-  Flame, LogOut, Plus, Target, Timer, Trophy, Upload, Users, X
+  Flame, LogOut, Plus, Target, Timer, Trophy, Upload, Users, X, Film, Shield, PencilLine, RotateCcw, RefreshCw
 } from 'lucide-react'
-
-type Profile = { id: string; username: string; display_name: string }
-type Task = {
-  id: string
-  title: string
-  category: string
-  target_value: number | null
-  unit: string | null
-  task_date: string
-  assigned_to: string
-  assigned_by: string
-  completed: boolean
-  completed_at: string | null
-  proof_url: string | null
-  proof_link?: string | null
-  notes: string | null
-  created_at: string
-  assignee?: Profile
-  assigner?: Profile
-}
+import TrainingCalendar from './training-calendar'
+import PlayerComparison from './player-comparison'
+import { calendarDays, shiftDay, today, trDate, QUICK_TASKS, type Profile, type Task } from './training'
 
 const CATEGORIES = [
   { value: 'aim', label: 'Aim / Bot', icon: Crosshair },
   { value: 'dm', label: 'Deathmatch', icon: Target },
   { value: 'surf', label: 'Surf / Movement', icon: Activity },
   { value: 'utility', label: 'Smoke / Utility', icon: Flame },
-  { value: 'other', label: 'Diğer', icon: Timer },
+  { value: 'recoil', label: 'Recoil / Spray', icon: RotateCcw },
+  { value: 'prefire', label: 'Prefire / Crosshair', icon: Crosshair },
+  { value: 'retake', label: 'Retake / Pozisyon', icon: Shield },
+  { value: 'demo', label: 'Demo / Maç analizi', icon: Film },
+  { value: 'other', label: 'Özel görev / Diğer', icon: PencilLine },
 ]
-
-const pad = (n: number) => String(n).padStart(2, '0')
-const dateKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-const today = () => dateKey(new Date())
-const trDate = (value: string) => new Intl.DateTimeFormat('tr-TR', { day: '2-digit', month: 'long', year: 'numeric' }).format(new Date(`${value}T12:00:00`))
 
 function Login({ onLogin }: { onLogin: () => void }) {
   const [username, setUsername] = useState('')
@@ -80,7 +64,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
   )
 }
 
-function AddTaskModal({ profiles, me, date, onClose, onSaved }: { profiles: Profile[]; me: Profile; date: string; onClose: () => void; onSaved: () => void }) {
+function AddTaskModal({ profiles, me, date, onClose, onSaved }: { profiles: Profile[]; me: Profile; date: string; onClose: () => void; onSaved: (date: string) => void }) {
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState('aim')
   const [target, setTarget] = useState('')
@@ -89,6 +73,20 @@ function AddTaskModal({ profiles, me, date, onClose, onSaved }: { profiles: Prof
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [taskDate, setTaskDate] = useState(date)
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null
+    const originalOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    dialogRef.current?.focus()
+    return () => { document.body.style.overflow = originalOverflow; previous?.focus() }
+  }, [])
+
+  const preset = (item: typeof QUICK_TASKS[number]) => {
+    setTitle(item.title); setCategory(item.category); setTarget(item.target); setUnit(item.unit)
+  }
 
   const save = async (e: FormEvent) => {
     e.preventDefault()
@@ -98,29 +96,40 @@ function AddTaskModal({ profiles, me, date, onClose, onSaved }: { profiles: Prof
     try {
     const { error } = await supabase.from('tasks').insert({
       title: title.trim(), category, target_value: target ? Number(target) : null,
-      unit: target ? unit : null, task_date: date, assigned_to: assignedTo,
+      unit: target ? unit : null, task_date: taskDate, assigned_to: assignedTo,
       assigned_by: me.id, notes: notes.trim() || null
     })
     if (error) setError('Görev kaydedilemedi. Lütfen tekrar dene.')
-    if (!error) { onSaved(); onClose() }
+    if (!error) { onSaved(taskDate); onClose() }
     } catch { setError('Bağlantı kurulamadı. Lütfen tekrar dene.') }
     finally { setSaving(false) }
   }
 
-  return <div className="modal-backdrop" onMouseDown={e => e.currentTarget === e.target && onClose()}>
-    <div className="modal">
-      <button className="close-btn" onClick={onClose}><X size={20}/></button>
+  return <div className="modal-backdrop" onMouseDown={e => !saving && e.currentTarget === e.target && onClose()}>
+    <div className="modal" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title" ref={dialogRef} tabIndex={-1} onKeyDown={event => {
+      if (event.key === 'Escape' && !saving) onClose()
+      if (event.key === 'Tab') {
+        const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, textarea, [tabindex="0"]'))
+        const first = controls[0], last = controls[controls.length - 1]
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+      }
+    }}>
+      <button className="close-btn" aria-label="Görev penceresini kapat" onClick={onClose} disabled={saving}><X size={20}/></button>
       <div className="eyebrow">YENİ GÖREV</div>
-      <h2>{trDate(date)}</h2>
+      <h2 id="task-dialog-title">Antrenmanını planla</h2>
+      <p className="modal-intro">Bir şablon seç veya görevini kendin yaz. Tüm alanları değiştirebilirsin.</p>
+      <div className="quick-presets" aria-label="Hızlı görev şablonları">{QUICK_TASKS.map(item => <button key={item.label} onClick={() => preset(item)}>{item.label}</button>)}<button onClick={() => { setTitle(''); setCategory('other'); setTarget(''); setUnit('adet') }}><PencilLine size={13}/>Özel görev</button></div>
       <form onSubmit={save} className="task-form">
-        <label>Görev<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Örn. Bot vur" required /></label>
+        <label>Görev<input value={title} onChange={e => setTitle(e.target.value)} placeholder={category === 'other' ? 'Örn. Mirage B savunma planını çalış' : 'Örn. Bot vur'} maxLength={180} required /></label>
         <div className="two-col">
           <label>Tür<select value={category} onChange={e => setCategory(e.target.value)}>{CATEGORIES.map(c => <option value={c.value} key={c.value}>{c.label}</option>)}</select></label>
           <label>Kime<select value={assignedTo} onChange={e => setAssignedTo(e.target.value)}>{profiles.map(p => <option value={p.id} key={p.id}>{p.display_name}</option>)}</select></label>
         </div>
+        <label>Antrenman tarihi<input type="date" required value={taskDate} onChange={e => setTaskDate(e.target.value)} /></label>
         <div className="two-col">
           <label>Hedef<input type="number" min="0" step="0.1" value={target} onChange={e => setTarget(e.target.value)} placeholder="1000" /></label>
-          <label>Birim<select value={unit} onChange={e => setUnit(e.target.value)}><option>adet</option><option>saat</option><option>dakika</option><option>round</option><option>map</option></select></label>
+          <label>Birim<select value={unit} onChange={e => setUnit(e.target.value)}><option>adet</option><option>saat</option><option>dakika</option><option>round</option><option>map</option><option>maç</option><option>demo</option><option>tekrar</option></select></label>
         </div>
         <label>Not <span className="optional">(opsiyonel)</span><textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Örn. HS odaklı, AK kullan..." /></label>
         {error && <div className="error-box" role="alert">{error}</div>}
@@ -134,7 +143,7 @@ function TaskCard({ task, me, onChange }: { task: Task; me: Profile; onChange: (
   const [uploading, setUploading] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [error, setError] = useState('')
-  const category = CATEGORIES.find(c => c.value === task.category) ?? CATEGORIES[4]
+  const category = CATEGORIES.find(c => c.value === task.category) ?? CATEGORIES[CATEGORIES.length - 1]
   const Icon = category.icon
 
   const toggle = async () => {
@@ -197,44 +206,67 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [addOpen, setAddOpen] = useState(false)
   const [celebrated, setCelebrated] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [player, setPlayer] = useState('all')
+  const [status, setStatus] = useState('all')
+  const [loadedDate, setLoadedDate] = useState('')
+  const requestId = useRef(0)
+  const logoutRef = useRef(onLogout)
+  const seenCelebrations = useRef(new Set<string>())
+  logoutRef.current = onLogout
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!supabase) return
+    const currentRequest = ++requestId.current
     setLoading(true)
     setLoadError('')
     try {
     const { data: auth } = await supabase.auth.getUser()
-    if (!auth.user) return onLogout()
-    const [{ data: profileRows, error: profileError }, { data: taskRows, error: taskError }] = await Promise.all([
-      supabase.from('profiles').select('*').order('display_name'),
-      supabase.from('tasks').select('*').eq('task_date', date).order('created_at')
-    ])
-    if (profileError || taskError) throw profileError || taskError
+    if (!auth.user) return logoutRef.current()
+    const days = calendarDays(date)
+    const { data: profileRows, error: profileError } = await supabase.from('profiles').select('*').order('display_name')
+    if (profileError) throw profileError
+    const taskRows: Task[] = []
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabase.from('tasks').select('*').gte('task_date', days[0]).lte('task_date', days[41]).order('created_at').order('id').range(offset, offset + 499)
+      if (error) throw error
+      taskRows.push(...(data || []) as Task[])
+      if (!data || data.length < 500) break
+      if (currentRequest !== requestId.current) return
+    }
     const ps = (profileRows ?? []) as Profile[]
     const mine = ps.find(p => p.id === auth.user?.id) ?? null
     const hydrated = await Promise.all(((taskRows ?? []) as Task[]).map(async t => ({
       ...t,
       assignee: ps.find(p => p.id === t.assigned_to),
       assigner: ps.find(p => p.id === t.assigned_by),
-      proof_link: t.proof_url ? (await supabase!.storage.from('training-proofs').createSignedUrl(t.proof_url, 3600)).data?.signedUrl : null
+      proof_link: t.proof_url && t.task_date === date ? (await supabase!.storage.from('training-proofs').createSignedUrl(t.proof_url, 3600)).data?.signedUrl : null
     })))
-    setProfiles(ps); setMe(mine); setTasks(hydrated); setLoading(false)
-    } catch { setLoadError('Görevler yüklenemedi. Lütfen tekrar dene.') }
-    finally { setLoading(false) }
-  }
+    if (currentRequest !== requestId.current) return
+    setProfiles(ps); setMe(mine); setTasks(hydrated); setLoadedDate(date)
+    } catch { if (currentRequest === requestId.current) setLoadError('Görevler yüklenemedi. Lütfen tekrar dene.') }
+    finally { if (currentRequest === requestId.current) setLoading(false) }
+  }, [date])
 
-  useEffect(() => { load() }, [date])
+  useEffect(() => { load(); return () => { requestId.current++ } }, [load])
+  useEffect(() => { const refresh = () => { load() }; window.addEventListener('focus', refresh); return () => window.removeEventListener('focus', refresh) }, [load])
 
-  const myTasks = useMemo(() => me ? tasks.filter(t => t.assigned_to === me.id) : [], [tasks, me])
+  const dailyTasks = useMemo(() => tasks.filter(task => task.task_date === date), [tasks, date])
+  const calendarTasks = useMemo(() => player === 'all' ? tasks : tasks.filter(task => task.assigned_to === player), [tasks, player])
+  const visibleTasks = dailyTasks.filter(task => (player === 'all' || task.assigned_to === player) && (status === 'all' || (status === 'done' ? task.completed : !task.completed)))
+  const myTasks = useMemo(() => me ? dailyTasks.filter(t => t.assigned_to === me.id) : [], [dailyTasks, me])
   const completed = myTasks.filter(t => t.completed).length
   const completion = myTasks.length ? Math.round((completed / myTasks.length) * 100) : 0
   const allDone = myTasks.length > 0 && completed === myTasks.length
 
-  useEffect(() => { if (allDone) setCelebrated(true) }, [allDone])
+  const pending = loading || loadedDate !== date
+  useEffect(() => {
+    if (!pending && !loadError && allDone && date === today() && !seenCelebrations.current.has(date)) {
+      seenCelebrations.current.add(date); setCelebrated(true)
+    }
+    if (!allDone) setCelebrated(false)
+  }, [allDone, pending, loadError, date])
 
-  const moveDate = (days: number) => {
-    const d = new Date(`${date}T12:00:00`); d.setDate(d.getDate() + days); setDate(dateKey(d)); setCelebrated(false)
-  }
+  const selectDate = (next: string) => { setDate(next); setCelebrated(false) }
 
   const logout = async () => { await supabase?.auth.signOut(); onLogout() }
 
@@ -247,33 +279,38 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     </header>
 
     <div className="dashboard">
-      <section className="hero">
-        <div><div className="eyebrow"><span className="live-dot"/> DAILY TRAINING</div><h1>Bugünün işi<br/><span>bitmeden çıkış yok.</span></h1><p>{me?.display_name}, günün görevlerini tamamla. Kanıtını bırak, seriyi bozma.</p></div>
-        <div className="score-ring" style={{'--progress': `${completion * 3.6}deg`} as React.CSSProperties}><div><strong>{completion}%</strong><small>{completed}/{myTasks.length} TAMAMLANDI</small></div></div>
+      <section className="hero hero-compact">
+        <div><div className="eyebrow"><span className="live-dot"/> ANTRENMAN MERKEZİ</div><h1>Planla. Çalış.<br/><span>Birlikte geliş.</span></h1><p>{me?.display_name}, takvimden gününü seç. Hedefini tamamla, ilerlemeni gör.</p></div>
+        <div className="score-ring" style={{'--progress': `${completion * 3.6}deg`} as React.CSSProperties}><div><strong>{pending ? '…' : `${completion}%`}</strong><small>SEÇİLİ GÜN · BENİM</small><small>{pending ? 'YÜKLENİYOR' : `${completed}/${myTasks.length} TAMAMLANDI`}</small></div></div>
       </section>
 
-      <section className="datebar">
-        <button onClick={() => moveDate(-1)}><ChevronLeft/></button>
-        <div><span>{date === today() ? 'BUGÜN' : 'ANTRENMAN GÜNÜ'}</span><strong>{trDate(date)}</strong></div>
-        <button onClick={() => moveDate(1)}><ChevronRight/></button>
+      <div className="workspace-toolbar"><div className="player-filters" aria-label="Takvim ve görevler için oyuncu filtresi"><button aria-pressed={player === 'all'} onClick={() => setPlayer('all')}><Users size={15}/>Tüm takım</button>{profiles.map(profile => <button key={profile.id} aria-pressed={player === profile.id} onClick={() => setPlayer(profile.id)}>{profile.display_name}{profile.id === me?.id && <small>sen</small>}</button>)}</div><button className="secondary-btn" onClick={() => load()} disabled={loading}><RefreshCw size={14} className={loading ? 'spinning' : ''}/>Yenile</button></div>
+      {loadError && <div className="error-box" role="alert">{loadError}<button className="secondary-btn" onClick={() => load()}>Tekrar Dene</button></div>}
+      <TrainingCalendar date={date} tasks={calendarTasks} loading={pending || !!loadError} onSelect={selectDate}/>
+      <PlayerComparison date={date} tasks={tasks} profiles={profiles} loading={pending || !!loadError}/>
+
+      <section className="datebar daily-datebar">
+        <button aria-label="Önceki gün" onClick={() => selectDate(shiftDay(date, -1))}><ChevronLeft/></button>
+        <div><span>{date === today() ? 'BUGÜN' : 'SEÇİLİ GÜN'}</span><strong>{trDate(date)}</strong></div>
+        <button aria-label="Sonraki gün" onClick={() => selectDate(shiftDay(date, 1))}><ChevronRight/></button>
       </section>
 
       <section className="stats-grid">
         <div className="stat"><div className="stat-icon"><Target/></div><div><small>GÖREVLERİM</small><strong>{myTasks.length}</strong></div></div>
         <div className="stat"><div className="stat-icon"><Check/></div><div><small>TAMAMLANAN</small><strong>{completed}</strong></div></div>
-        <div className="stat"><div className="stat-icon"><Users/></div><div><small>TAKIM GÖREVİ</small><strong>{tasks.length}</strong></div></div>
-        <div className="stat"><div className="stat-icon"><Flame/></div><div><small>GÜNLÜK DURUM</small><strong className="status-text">{allDone ? 'BİTTİ' : 'DEVAM'}</strong></div></div>
+        <div className="stat"><div className="stat-icon"><Users/></div><div><small>TAKIM GÖREVİ</small><strong>{dailyTasks.length}</strong></div></div>
+        <div className="stat"><div className="stat-icon"><Flame/></div><div><small>BENİM DURUMUM</small><strong className="status-text">{allDone ? 'BİTTİ' : myTasks.length ? 'DEVAM' : 'PLAN YOK'}</strong></div></div>
       </section>
 
-      <section className="section-head"><div><div className="eyebrow">MISSION LIST</div><h2>{date === today() ? 'Bugünün görevleri' : 'Görevler'}</h2></div><button className="add-btn" onClick={() => setAddOpen(true)}><Plus size={18}/> Görev Ata</button></section>
+      <section className="section-head"><div><div className="eyebrow">GÜNÜN PLANI</div><h2>{date === today() ? 'Bugünün görevleri' : 'Günün görevleri'}</h2></div><button className="add-btn" disabled={!me} onClick={() => setAddOpen(true)}><Plus size={18}/> Görev Ata</button></section>
+      <div className="task-toolbar"><div className="status-filters" aria-label="Görev durumu filtresi">{[{value:'all',label:'Tümü'},{value:'open',label:'Bekleyen'},{value:'done',label:'Tamamlanan'}].map(item => <button key={item.value} aria-pressed={status === item.value} onClick={() => setStatus(item.value)}>{item.label}</button>)}</div><span>{visibleTasks.length} görev · {player === 'all' ? 'Tüm takım' : profiles.find(profile => profile.id === player)?.display_name}</span></div>
 
       <section className="task-list">
-        {loadError && <div className="error-box" role="alert">{loadError}<button onClick={load}>Tekrar Dene</button></div>}
-        {loading ? <div className="empty">Görevler yükleniyor...</div> : tasks.length === 0 ? <div className="empty"><Crosshair size={34}/><h3>Henüz görev yok</h3><p>Bu güne ilk antrenman görevini ekle.</p></div> : tasks.map(t => <TaskCard key={t.id} task={t} me={me!} onChange={load}/>) }
+        {pending ? <div className="empty">Görevler yükleniyor...</div> : loadError ? <div className="empty">Bağlantı kurulunca görevler burada görünecek.</div> : visibleTasks.length === 0 ? <div className="empty"><Crosshair size={34}/><h3>{dailyTasks.length ? 'Bu filtrede görev yok' : 'Bu gün seninle başlasın'}</h3><p>{dailyTasks.length ? 'Farklı bir oyuncu veya görev durumu seçebilirsin.' : 'Bir şablon seç veya kendi antrenman görevini yaz.'}</p><button className="secondary-btn" onClick={() => setAddOpen(true)} disabled={!me}><Plus size={15}/>Görev ekle</button></div> : visibleTasks.map(t => <TaskCard key={t.id} task={t} me={me!} onChange={load}/>) }
       </section>
     </div>
 
-    {addOpen && me && <AddTaskModal profiles={profiles} me={me} date={date} onClose={() => setAddOpen(false)} onSaved={load}/>} 
+    {addOpen && me && <AddTaskModal profiles={profiles} me={me} date={date} onClose={() => setAddOpen(false)} onSaved={savedDate => { if (savedDate !== date) selectDate(savedDate); else load() }}/>} 
     {celebrated && allDone && <div className="celebration" onClick={() => setCelebrated(false)}><div className="celebration-card"><div className="trophy"><Trophy size={42}/></div><div className="eyebrow">MISSION COMPLETE</div><h2>TEBRİKLER, {me?.display_name?.toUpperCase()}!</h2><p>Bugünün bütün görevlerini tamamladın. Yarın yine aynı disiplin.</p><div className="achievement"><Award size={18}/> Günlük antrenman tamamlandı</div><button className="primary" onClick={() => setCelebrated(false)}>Devam Et</button></div></div>}
   </main>
 }
