@@ -20,6 +20,7 @@ type Task = {
   completed: boolean
   completed_at: string | null
   proof_url: string | null
+  proof_link?: string | null
   notes: string | null
   created_at: string
   assignee?: Profile
@@ -160,8 +161,7 @@ function TaskCard({ task, me, onChange }: { task: Task; me: Profile; onChange: (
     const { error } = await supabase.storage.from('training-proofs').upload(path, file, { upsert: true })
     if (error) throw error
     {
-      const { data } = supabase.storage.from('training-proofs').getPublicUrl(path)
-      const { error: saveError } = await supabase.from('tasks').update({ proof_url: data.publicUrl }).eq('id', task.id).select('id').single()
+      const { error: saveError } = await supabase.from('tasks').update({ proof_url: path }).eq('id', task.id).select('id').single()
       if (saveError) throw saveError
       onChange()
     }
@@ -181,7 +181,7 @@ function TaskCard({ task, me, onChange }: { task: Task; me: Profile; onChange: (
       </div>
       {task.notes && <p className="task-note">{task.notes}</p>}
       <div className="proof-row">
-        {task.proof_url ? <a href={task.proof_url} target="_blank" className="proof-preview"><img src={task.proof_url} alt="Antrenman kanıtı" /><span><Camera size={14}/> Kanıtı görüntüle</span></a> : task.assigned_to === me.id ? <label className="upload-btn"><Upload size={15}/>{uploading ? 'Yükleniyor...' : 'Kanıt ekle'}<input type="file" accept="image/*" hidden disabled={uploading} onChange={e => upload(e.target.files?.[0])}/></label> : <span className="no-proof">Kanıt eklenmedi</span>}
+        {task.proof_link ? <a href={task.proof_link} target="_blank" rel="noreferrer" className="proof-preview"><img src={task.proof_link} alt="Antrenman kanıtı" /><span><Camera size={14}/> Kanıtı görüntüle</span></a> : task.assigned_to === me.id ? <label className="upload-btn"><Upload size={15}/>{uploading ? 'Yükleniyor...' : 'Kanıt ekle'}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden disabled={uploading} onChange={e => upload(e.target.files?.[0])}/></label> : <span className="no-proof">Kanıt eklenmedi</span>}
       </div>
       {error && <div className="error-box" role="alert">{error}</div>}
     </div>
@@ -212,11 +212,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     if (profileError || taskError) throw profileError || taskError
     const ps = (profileRows ?? []) as Profile[]
     const mine = ps.find(p => p.id === auth.user?.id) ?? null
-    const hydrated = ((taskRows ?? []) as Task[]).map(t => ({
+    const hydrated = await Promise.all(((taskRows ?? []) as Task[]).map(async t => ({
       ...t,
       assignee: ps.find(p => p.id === t.assigned_to),
-      assigner: ps.find(p => p.id === t.assigned_by)
-    }))
+      assigner: ps.find(p => p.id === t.assigned_by),
+      proof_link: t.proof_url ? (await supabase!.storage.from('training-proofs').createSignedUrl(t.proof_url, 3600)).data?.signedUrl : null
+    })))
     setProfiles(ps); setMe(mine); setTasks(hydrated); setLoading(false)
     } catch { setLoadError('Görevler yüklenemedi. Lütfen tekrar dene.') }
     finally { setLoading(false) }
